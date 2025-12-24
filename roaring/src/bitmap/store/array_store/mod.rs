@@ -358,6 +358,12 @@ impl ArrayStore {
     }
 }
 
+impl<'a> From<&'a ArrayStore> for ArrayStoreRef<'a> {
+    fn from(val: &'a ArrayStore) -> Self {
+        ArrayStoreRef { vec: &val.vec }
+    }
+}
+
 impl Default for ArrayStore {
     fn default() -> Self {
         ArrayStore::new()
@@ -412,10 +418,70 @@ impl TryFrom<Vec<u16>> for ArrayStore {
     }
 }
 
-impl BitOr<Self> for &ArrayStore {
+pub(crate) struct ArrayStoreRef<'a> {
+    vec: &'a [u16],
+}
+
+impl<'a> ArrayStoreRef<'a> {
+    #[inline]
+    pub fn from_slice_unchecked(data: &[u16]) -> ArrayStoreRef<'_> {
+        if cfg!(debug_assertions) {
+            let _: ArrayStore = data.to_vec().try_into().unwrap();
+            ArrayStoreRef { vec: data }
+        } else {
+            ArrayStoreRef { vec: data }
+        }
+    }
+
+    pub fn byte_size(&self) -> usize {
+        ArrayStore::serialized_byte_size(self.len())
+    }
+
+    pub fn len(&self) -> u64 {
+        self.vec.len() as u64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vec.is_empty()
+    }
+
+    pub fn min(&self) -> Option<u16> {
+        self.vec.first().copied()
+    }
+
+    #[inline]
+    pub fn max(&self) -> Option<u16> {
+        self.vec.last().copied()
+    }
+
+    pub fn rank(&self, index: u16) -> u64 {
+        match self.vec.binary_search(&index) {
+            Ok(i) => i as u64 + 1,
+            Err(i) => i as u64,
+        }
+    }
+
+    pub fn select(&self, n: u16) -> Option<u16> {
+        self.vec.get(n as usize).cloned()
+    }
+
+    pub fn iter(&'_ self) -> core::slice::Iter<'_, u16> {
+        self.vec.iter()
+    }
+
+    pub fn as_slice(&self) -> &[u16] {
+        self.vec
+    }
+}
+
+impl<'a, T> BitOr<T> for &ArrayStore
+where
+    T: Into<ArrayStoreRef<'a>> + 'a,
+{
     type Output = ArrayStore;
 
-    fn bitor(self, rhs: Self) -> Self::Output {
+    fn bitor(self, rhs: T) -> Self::Output {
+        let rhs = rhs.into();
         #[allow(clippy::suspicious_arithmetic_impl)]
         let capacity = self.vec.len() + rhs.vec.len();
         let mut visitor = VecWriter::new(capacity);
@@ -427,10 +493,14 @@ impl BitOr<Self> for &ArrayStore {
     }
 }
 
-impl BitAnd<Self> for &ArrayStore {
+impl<'a, T> BitAnd<T> for &ArrayStore
+where
+    T: Into<ArrayStoreRef<'a>> + 'a,
+{
     type Output = ArrayStore;
 
-    fn bitand(self, rhs: Self) -> Self::Output {
+    fn bitand(self, rhs: T) -> Self::Output {
+        let rhs = rhs.into();
         let mut visitor = VecWriter::new(self.vec.len().min(rhs.vec.len()));
         #[cfg(feature = "simd")]
         vector::and(self.as_slice(), rhs.as_slice(), &mut visitor);
@@ -440,9 +510,13 @@ impl BitAnd<Self> for &ArrayStore {
     }
 }
 
-impl BitAndAssign<&Self> for ArrayStore {
+impl<'a, T> BitAndAssign<T> for ArrayStore
+where
+    T: Into<ArrayStoreRef<'a>> + 'a,
+{
     #[allow(clippy::suspicious_op_assign_impl)]
-    fn bitand_assign(&mut self, rhs: &Self) {
+    fn bitand_assign(&mut self, rhs: T) {
+        let rhs = rhs.into();
         #[cfg(feature = "simd")]
         {
             let mut visitor = VecWriter::new(self.vec.len().min(rhs.vec.len()));
@@ -466,10 +540,14 @@ impl BitAndAssign<&BitmapStore> for ArrayStore {
     }
 }
 
-impl Sub<Self> for &ArrayStore {
+impl<'a, T> Sub<T> for &ArrayStore
+where
+    T: Into<ArrayStoreRef<'a>> + 'a,
+{
     type Output = ArrayStore;
 
-    fn sub(self, rhs: Self) -> Self::Output {
+    fn sub(self, rhs: T) -> Self::Output {
+        let rhs = rhs.into();
         let mut visitor = VecWriter::new(self.vec.len());
         #[cfg(feature = "simd")]
         vector::sub(self.as_slice(), rhs.as_slice(), &mut visitor);
@@ -479,9 +557,13 @@ impl Sub<Self> for &ArrayStore {
     }
 }
 
-impl SubAssign<&Self> for ArrayStore {
+impl<'a, T> SubAssign<T> for ArrayStore
+where
+    T: Into<ArrayStoreRef<'a>> + 'a,
+{
     #[allow(clippy::suspicious_op_assign_impl)]
-    fn sub_assign(&mut self, rhs: &Self) {
+    fn sub_assign(&mut self, rhs: T) {
+        let rhs = rhs.into();
         #[cfg(feature = "simd")]
         {
             let mut visitor = VecWriter::new(self.vec.len().min(rhs.vec.len()));
@@ -505,10 +587,14 @@ impl SubAssign<&BitmapStore> for ArrayStore {
     }
 }
 
-impl BitXor<Self> for &ArrayStore {
+impl<'a, T> BitXor<T> for &ArrayStore
+where
+    T: Into<ArrayStoreRef<'a>> + 'a,
+{
     type Output = ArrayStore;
 
-    fn bitxor(self, rhs: Self) -> Self::Output {
+    fn bitxor(self, rhs: T) -> Self::Output {
+        let rhs = rhs.into();
         #[allow(clippy::suspicious_arithmetic_impl)]
         let capacity = self.vec.len() + rhs.vec.len();
         let mut visitor = VecWriter::new(capacity);
