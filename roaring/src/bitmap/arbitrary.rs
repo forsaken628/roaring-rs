@@ -16,12 +16,13 @@ mod test {
             if self.len() < 16 {
                 write!(f, "BitmapStore<{:?}>", self.iter().collect::<Vec<u16>>())
             } else {
+                let bitmap = self.as_ref();
                 write!(
                     f,
                     "BitmapStore<{:?} values between {:?} and {:?}>",
-                    self.len(),
-                    self.min().unwrap(),
-                    self.max().unwrap()
+                    bitmap.len(),
+                    bitmap.min().unwrap(),
+                    bitmap.max().unwrap()
                 )
             }
         }

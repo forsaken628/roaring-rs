@@ -15,11 +15,13 @@ use self::Store::{Array, Bitmap, Run};
 pub(crate) use self::array_store::ArrayStore;
 pub use self::bitmap_store::{BitmapIter, BitmapStore};
 pub(crate) use self::interval_store::Interval;
-pub(crate) use interval_store::{IntervalStore, RunIterBorrowed, RunIterOwned};
+pub(crate) use interval_store::{IntervalStore, IntervalStoreRef, RunIterBorrowed, RunIterOwned};
 #[cfg(feature = "std")]
 pub(crate) use interval_store::{RUN_ELEMENT_BYTES, RUN_NUM_BYTES};
 
 use crate::bitmap::container::ARRAY_LIMIT;
+use crate::bitmap::store::array_store::ArrayStoreRef;
+use crate::bitmap::store::bitmap_store::BitmapStoreRef;
 
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
@@ -29,6 +31,23 @@ pub(crate) enum Store {
     Array(ArrayStore),
     Bitmap(BitmapStore),
     Run(IntervalStore),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum StoreRef<'a> {
+    Array(ArrayStoreRef<'a>),
+    Bitmap(BitmapStoreRef<'a>),
+    Run(IntervalStoreRef<'a>),
+}
+
+impl<'a> From<&'a Store> for StoreRef<'a> {
+    fn from(val: &'a Store) -> Self {
+        match val {
+            Array(array) => StoreRef::Array(array.as_ref()),
+            Bitmap(bitmap) => StoreRef::Bitmap(bitmap.as_ref()),
+            Run(intervals) => StoreRef::Run(intervals.as_ref()),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -178,23 +197,15 @@ impl Store {
     }
 
     pub fn contains(&self, index: u16) -> bool {
-        match self {
-            Array(vec) => vec.contains(index),
-            Bitmap(bits) => bits.contains(index),
-            Run(intervals) => intervals.contains(index),
-        }
+        self.as_ref().contains(index)
     }
 
     pub fn contains_range(&self, range: RangeInclusive<u16>) -> bool {
-        match self {
-            Array(vec) => vec.contains_range(range),
-            Bitmap(bits) => bits.contains_range(range),
-            Run(runs) => runs.contains_range(range),
-        }
+        self.as_ref().contains_range(range)
     }
 
     pub fn is_full(&self) -> bool {
-        self.len() == (1 << 16)
+        self.as_ref().is_full()
     }
 
     pub fn is_disjoint(&self, other: &Self) -> bool {
@@ -241,52 +252,28 @@ impl Store {
     }
 
     pub fn len(&self) -> u64 {
-        match self {
-            Array(vec) => vec.len(),
-            Bitmap(bits) => bits.len(),
-            Run(intervals) => intervals.len(),
-        }
+        self.as_ref().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        match self {
-            Array(vec) => vec.is_empty(),
-            Bitmap(bits) => bits.is_empty(),
-            Run(runs) => runs.is_empty(),
-        }
+        self.as_ref().is_empty()
     }
 
     pub fn min(&self) -> Option<u16> {
-        match self {
-            Array(vec) => vec.min(),
-            Bitmap(bits) => bits.min(),
-            Run(runs) => runs.min(),
-        }
+        self.as_ref().min()
     }
 
     #[inline]
     pub fn max(&self) -> Option<u16> {
-        match self {
-            Array(vec) => vec.max(),
-            Bitmap(bits) => bits.max(),
-            Run(runs) => runs.max(),
-        }
+        self.as_ref().max()
     }
 
     pub fn rank(&self, index: u16) -> u64 {
-        match self {
-            Array(vec) => vec.rank(index),
-            Bitmap(bits) => bits.rank(index),
-            Run(runs) => runs.rank(index),
-        }
+        self.as_ref().rank(index)
     }
 
     pub fn select(&self, n: u16) -> Option<u16> {
-        match self {
-            Array(vec) => vec.select(n),
-            Bitmap(bits) => bits.select(n),
-            Run(runs) => runs.select(n),
-        }
+        self.as_ref().select(n)
     }
 
     pub fn count_runs(&self) -> u64 {
@@ -408,6 +395,90 @@ impl Store {
             Run(runs) => runs.internal_validate(),
         }
     }
+
+    pub fn as_ref(&self) -> StoreRef<'_> {
+        self.into()
+    }
+}
+
+impl<'a> StoreRef<'a> {
+    pub fn len(&self) -> u64 {
+        match self {
+            StoreRef::Array(array) => array.len(),
+            StoreRef::Bitmap(bitmap) => bitmap.len(),
+            StoreRef::Run(runs) => runs.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            StoreRef::Array(array) => array.is_empty(),
+            StoreRef::Bitmap(bitmap) => bitmap.is_empty(),
+            StoreRef::Run(runs) => runs.is_empty(),
+        }
+    }
+
+    pub fn min(&self) -> Option<u16> {
+        match self {
+            StoreRef::Array(array) => array.min(),
+            StoreRef::Bitmap(bitmap) => bitmap.min(),
+            StoreRef::Run(runs) => runs.min(),
+        }
+    }
+
+    #[inline]
+    pub fn max(&self) -> Option<u16> {
+        match self {
+            StoreRef::Array(array) => array.max(),
+            StoreRef::Bitmap(bitmap) => bitmap.max(),
+            StoreRef::Run(runs) => runs.max(),
+        }
+    }
+
+    pub fn rank(&self, index: u16) -> u64 {
+        match self {
+            StoreRef::Array(array) => array.rank(index),
+            StoreRef::Bitmap(bitmap) => bitmap.rank(index),
+            StoreRef::Run(runs) => runs.rank(index),
+        }
+    }
+
+    pub fn select(&self, n: u16) -> Option<u16> {
+        match self {
+            StoreRef::Array(array) => array.select(n),
+            StoreRef::Bitmap(bitmap) => bitmap.select(n),
+            StoreRef::Run(runs) => runs.select(n),
+        }
+    }
+
+    pub fn contains(&self, index: u16) -> bool {
+        match self {
+            StoreRef::Array(array) => array.contains(index),
+            StoreRef::Bitmap(bitmap) => bitmap.contains(index),
+            StoreRef::Run(runs) => runs.contains(index),
+        }
+    }
+
+    pub fn contains_range(&self, range: RangeInclusive<u16>) -> bool {
+        match self {
+            StoreRef::Array(array) => array.contains_range(range),
+            StoreRef::Bitmap(bitmap) => bitmap.contains_range(range),
+            StoreRef::Run(runs) => runs.contains_range(range),
+        }
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.len() == (1 << 16)
+    }
+
+    #[allow(dead_code)]
+    pub fn owned(&self) -> Store {
+        match self {
+            StoreRef::Array(array) => Store::Array(array.owned()),
+            StoreRef::Bitmap(bitmap) => Store::Bitmap(bitmap.owned()),
+            StoreRef::Run(runs) => Store::Run(runs.owned()),
+        }
+    }
 }
 
 impl Default for Store {
@@ -416,46 +487,47 @@ impl Default for Store {
     }
 }
 
-impl BitOr<&Store> for &Store {
+impl<'a> BitOr<StoreRef<'a>> for StoreRef<'_> {
     type Output = Store;
 
-    fn bitor(self, rhs: &Store) -> Store {
+    fn bitor(self, rhs: StoreRef<'a>) -> Store {
         match (self, rhs) {
-            (Array(vec1), Array(vec2)) => Array(BitOr::bitor(vec1, vec2)),
-            (&Bitmap(..), &Array(..)) => {
-                let mut lhs = self.clone();
-                BitOrAssign::bitor_assign(&mut lhs, rhs);
-                lhs
+            (StoreRef::Array(vec1), StoreRef::Array(vec2)) => Array(BitOr::bitor(vec1, vec2)),
+            (StoreRef::Array(_), StoreRef::Bitmap(bitmap)) => {
+                let mut rhs_store = Store::Bitmap(bitmap.owned());
+                BitOrAssign::bitor_assign(&mut rhs_store, self);
+                rhs_store
             }
-            (&Bitmap(..), &Bitmap(..)) => {
-                let mut lhs = self.clone();
-                BitOrAssign::bitor_assign(&mut lhs, rhs);
-                lhs
-            }
-            (&Array(..), &Bitmap(..)) => {
-                let mut rhs = rhs.clone();
-                BitOrAssign::bitor_assign(&mut rhs, self);
-                rhs
-            }
-            (Run(left), Run(right)) => {
-                let (smallest, biggest) = if left.run_amount() > right.run_amount() {
-                    (right, left)
+            (StoreRef::Run(left), StoreRef::Run(right)) => {
+                if left.run_amount() >= right.run_amount() {
+                    let mut res = left.owned();
+                    BitOrAssign::bitor_assign(&mut res, right);
+                    Run(res)
                 } else {
-                    (left, right)
-                };
-                let mut res = biggest.clone();
-                BitOrAssign::bitor_assign(&mut res, smallest);
-                Run(res)
+                    let mut res = right.owned();
+                    BitOrAssign::bitor_assign(&mut res, left);
+                    Run(res)
+                }
             }
-            (Run(runs), Array(array)) | (Array(array), Run(runs)) => {
-                let mut ret = runs.clone();
+            (StoreRef::Run(runs), StoreRef::Array(array)) => {
+                let mut ret = runs.owned();
                 BitOrAssign::bitor_assign(&mut ret, array);
                 Run(ret)
             }
-            (Run(runs), Bitmap(bitmap)) | (Bitmap(bitmap), Run(runs)) => {
+            (StoreRef::Array(array), StoreRef::Run(runs)) => {
+                let mut ret = runs.owned();
+                BitOrAssign::bitor_assign(&mut ret, array);
+                Run(ret)
+            }
+            (StoreRef::Run(runs), StoreRef::Bitmap(bitmap)) => {
                 let mut ret = runs.to_bitmap();
                 BitOrAssign::bitor_assign(&mut ret, bitmap);
                 Bitmap(ret)
+            }
+            (StoreRef::Bitmap(_), _) => {
+                let mut lhs = self.owned();
+                lhs.bitor_assign(rhs);
+                lhs
             }
         }
     }
@@ -465,7 +537,7 @@ impl BitOrAssign<Store> for Store {
     fn bitor_assign(&mut self, rhs: Store) {
         match (self, rhs) {
             (&mut Array(ref mut vec1), Array(ref vec2)) => {
-                *vec1 = BitOr::bitor(&*vec1, vec2);
+                *vec1 = BitOr::bitor(vec1.as_ref(), vec2.as_ref());
             }
             (&mut Bitmap(ref mut bits1), Array(ref vec2)) => {
                 BitOrAssign::bitor_assign(bits1, vec2);
@@ -498,42 +570,48 @@ impl BitOrAssign<Store> for Store {
 
 impl BitOrAssign<&Store> for Store {
     fn bitor_assign(&mut self, rhs: &Store) {
+        self.bitor_assign(rhs.as_ref())
+    }
+}
+
+impl<'a> BitOrAssign<StoreRef<'a>> for Store {
+    fn bitor_assign(&mut self, rhs: StoreRef<'a>) {
         match (self, rhs) {
-            (&mut Array(ref mut vec1), Array(vec2)) => {
-                let this = mem::take(vec1);
-                *vec1 = BitOr::bitor(&this, vec2);
+            (Array(vec1), StoreRef::Array(vec2)) => {
+                *vec1 = BitOr::bitor(vec1.as_ref(), vec2);
             }
-            (&mut Bitmap(ref mut bits1), Array(vec2)) => {
+            (Bitmap(bits1), StoreRef::Array(vec2)) => {
                 BitOrAssign::bitor_assign(bits1, vec2);
             }
-            (&mut Bitmap(ref mut bits1), Bitmap(bits2)) => {
+            (Bitmap(bits1), StoreRef::Bitmap(bits2)) => {
                 BitOrAssign::bitor_assign(bits1, bits2);
             }
-            (this @ &mut Array(..), Bitmap(bits2)) => {
-                let mut lhs: Store = Bitmap(bits2.clone());
-                BitOrAssign::bitor_assign(&mut lhs, &*this);
-                *this = lhs;
+            (vec1 @ Array(_), StoreRef::Bitmap(bits2)) => {
+                let mut lhs: Store = Bitmap(bits2.owned());
+                BitOrAssign::bitor_assign(&mut lhs, vec1.as_ref());
+                *vec1 = lhs;
             }
-            (Run(runs1), Run(runs2)) => {
+            (Run(runs1), StoreRef::Run(runs2)) => {
                 BitOrAssign::bitor_assign(runs1, runs2);
             }
-            (Run(runs), Array(array)) => {
+            (Run(runs), StoreRef::Array(array)) => {
                 BitOrAssign::bitor_assign(runs, array);
             }
-            (this @ Array(..), Run(runs)) => {
-                let mut runs = runs.clone();
+            (this @ Array(..), StoreRef::Run(runs)) => {
+                let mut runs = runs.owned();
                 let Array(array) = &this else { unreachable!() };
                 BitOrAssign::bitor_assign(&mut runs, array);
                 *this = Run(runs);
             }
-            (this @ Run(..), Bitmap(bitmap)) => {
+            (this @ Run(..), StoreRef::Bitmap(bitmap)) => {
                 let Run(runs) = &this else { unreachable!() };
                 let mut new = runs.to_bitmap();
                 BitOrAssign::bitor_assign(&mut new, bitmap);
                 *this = Bitmap(new);
             }
-            (Bitmap(bitmap), Run(runs)) => {
-                BitOrAssign::bitor_assign(bitmap, &runs.to_bitmap());
+            (Bitmap(bitmap), StoreRef::Run(runs)) => {
+                let other = runs.to_bitmap();
+                BitOrAssign::bitor_assign(bitmap, &other);
             }
         }
     }
@@ -543,16 +621,24 @@ impl BitAnd<&Store> for &Store {
     type Output = Store;
 
     fn bitand(self, rhs: &Store) -> Store {
+        self.bitand(rhs.as_ref())
+    }
+}
+
+impl<'a> BitAnd<StoreRef<'a>> for &Store {
+    type Output = Store;
+
+    fn bitand(self, rhs: StoreRef<'a>) -> Store {
         match (self, rhs) {
-            (Array(vec1), Array(vec2)) => Array(BitAnd::bitand(vec1, vec2)),
-            (&Bitmap(..), &Array(..)) => {
-                let mut rhs = rhs.clone();
+            (Array(vec1), StoreRef::Array(vec2)) => Array(BitAnd::bitand(vec1.as_ref(), vec2)),
+            (Bitmap(_), StoreRef::Array(vec)) => {
+                let mut rhs = Store::Array(vec.owned());
                 BitAndAssign::bitand_assign(&mut rhs, self);
                 rhs
             }
             _ => {
                 let mut lhs = self.clone();
-                BitAndAssign::bitand_assign(&mut lhs, rhs);
+                lhs.bitand_assign(rhs);
                 lhs
             }
         }
@@ -563,14 +649,15 @@ impl BitAndAssign<Store> for Store {
     #[allow(clippy::suspicious_op_assign_impl)]
     fn bitand_assign(&mut self, mut rhs: Store) {
         match (self, &mut rhs) {
-            (&mut Array(ref mut vec1), &mut Array(ref mut vec2)) => {
+            (Array(vec1), Array(vec2)) => {
                 if vec2.len() < vec1.len() {
-                    mem::swap(vec1, vec2);
+                    BitAndAssign::bitand_assign(vec2, vec1.as_ref())
+                } else {
+                    BitAndAssign::bitand_assign(vec1, vec2.as_ref());
                 }
-                BitAndAssign::bitand_assign(vec1, &*vec2);
             }
-            (&mut Bitmap(ref mut bits1), &mut Bitmap(ref bits2)) => {
-                BitAndAssign::bitand_assign(bits1, bits2);
+            (Bitmap(bits1), Bitmap(bits2)) => {
+                BitAndAssign::bitand_assign(bits1, bits2.as_ref());
             }
             (&mut Array(ref mut vec1), &mut Bitmap(ref bits2)) => {
                 BitAndAssign::bitand_assign(vec1, bits2);
@@ -589,11 +676,11 @@ impl BitAndAssign<Store> for Store {
             (this @ &mut Run(..), Bitmap(bitmap)) => {
                 let Run(runs) = &this else { unreachable!() };
                 let mut new_bitmap = runs.to_bitmap();
-                BitAndAssign::bitand_assign(&mut new_bitmap, &*bitmap);
+                BitAndAssign::bitand_assign(&mut new_bitmap, bitmap.as_ref());
                 *this = Bitmap(new_bitmap);
             }
             (Bitmap(bitmap), Run(runs)) => {
-                BitAndAssign::bitand_assign(bitmap, &runs.to_bitmap());
+                BitAndAssign::bitand_assign(bitmap, runs.to_bitmap().as_ref());
             }
             (this @ &mut Bitmap(..), &mut Array(..)) => {
                 mem::swap(this, &mut rhs);
@@ -606,60 +693,67 @@ impl BitAndAssign<Store> for Store {
 impl BitAndAssign<&Store> for Store {
     #[allow(clippy::suspicious_op_assign_impl)]
     fn bitand_assign(&mut self, rhs: &Store) {
+        self.bitand_assign(rhs.as_ref());
+    }
+}
+
+impl<'a> BitAndAssign<StoreRef<'a>> for Store {
+    #[allow(clippy::suspicious_op_assign_impl)]
+    fn bitand_assign(&mut self, rhs: StoreRef<'a>) {
         match (self, rhs) {
-            (&mut Array(ref mut vec1), Array(vec2)) => {
-                let (mut lhs, rhs) = if vec2.len() < vec1.len() {
-                    (vec2.clone(), &*vec1)
+            (&mut Array(ref mut vec1), StoreRef::Array(vec2)) => {
+                let (mut lhs, rhs_ref) = if vec2.len() < vec1.len() {
+                    (ArrayStore::from_vec_unchecked(vec2.as_slice().to_vec()), vec1.as_ref())
                 } else {
                     (mem::take(vec1), vec2)
                 };
-
-                BitAndAssign::bitand_assign(&mut lhs, rhs);
+                BitAndAssign::bitand_assign(&mut lhs, rhs_ref);
                 *vec1 = lhs;
             }
-            (&mut Bitmap(ref mut bits1), Bitmap(bits2)) => {
+            (&mut Bitmap(ref mut bits1), StoreRef::Bitmap(bits2)) => {
                 BitAndAssign::bitand_assign(bits1, bits2);
             }
-            (&mut Array(ref mut vec1), Bitmap(bits2)) => {
+            (&mut Array(ref mut vec1), StoreRef::Bitmap(bits2)) => {
                 BitAndAssign::bitand_assign(vec1, bits2);
             }
-            (this @ &mut Bitmap(..), &Array(..)) => {
-                let mut new = rhs.clone();
+            (this @ &mut Bitmap(..), StoreRef::Array(array)) => {
+                let mut new = Store::Array(array.owned());
                 BitAndAssign::bitand_assign(&mut new, &*this);
                 *this = new;
             }
-            (Run(runs1), Run(runs2)) => {
-                *runs1 = BitAnd::bitand(&*runs1, runs2);
+            (Run(runs1), StoreRef::Run(runs2)) => {
+                let other = runs2.owned();
+                *runs1 = BitAnd::bitand(&*runs1, &other);
             }
-            (this @ Run(..), Bitmap(bitmap)) => {
+            (this @ Run(..), StoreRef::Bitmap(bitmap)) => {
                 let Run(runs) = &this else { unreachable!() };
                 let mut new_bitmap = runs.to_bitmap();
                 BitAndAssign::bitand_assign(&mut new_bitmap, bitmap);
                 *this = Bitmap(new_bitmap);
             }
-            (Bitmap(bitmap), Run(runs)) => {
-                BitAndAssign::bitand_assign(bitmap, &runs.to_bitmap());
+            (Bitmap(bitmap), StoreRef::Run(runs)) => {
+                BitAndAssign::bitand_assign(bitmap, runs.to_bitmap().as_ref());
             }
-            (this @ Run(..), Array(array)) => {
+            (this @ Run(..), StoreRef::Array(array)) => {
                 let Run(runs) = &this else { unreachable!() };
-                let mut new_array = array.clone();
+                let mut new_array = array.owned();
                 new_array.retain(|f| runs.contains(f));
                 *this = Array(new_array);
             }
-            (Array(array), Run(runs)) => array.retain(|f| runs.contains(f)),
+            (Array(array), StoreRef::Run(runs)) => array.retain(|f| runs.contains(f)),
         }
     }
 }
 
-impl Sub<&Store> for &Store {
+impl<'a> Sub<StoreRef<'a>> for StoreRef<'_> {
     type Output = Store;
 
-    fn sub(self, rhs: &Store) -> Store {
+    fn sub(self, rhs: StoreRef<'a>) -> Store {
         match (self, rhs) {
-            (Array(vec1), Array(vec2)) => Array(Sub::sub(vec1, vec2)),
+            (StoreRef::Array(vec1), StoreRef::Array(vec2)) => Array(Sub::sub(vec1, vec2)),
             _ => {
-                let mut lhs = self.clone();
-                SubAssign::sub_assign(&mut lhs, rhs);
+                let mut lhs = self.owned();
+                lhs.sub_assign(rhs);
                 lhs
             }
         }
@@ -668,39 +762,45 @@ impl Sub<&Store> for &Store {
 
 impl SubAssign<&Store> for Store {
     fn sub_assign(&mut self, rhs: &Store) {
+        self.sub_assign(rhs.as_ref());
+    }
+}
+
+impl<'a> SubAssign<StoreRef<'a>> for Store {
+    fn sub_assign(&mut self, rhs: StoreRef<'a>) {
         match (self, rhs) {
-            (&mut Array(ref mut vec1), Array(vec2)) => {
+            (&mut Array(ref mut vec1), StoreRef::Array(vec2)) => {
                 SubAssign::sub_assign(vec1, vec2);
             }
-            (&mut Bitmap(ref mut bits1), Array(vec2)) => {
+            (&mut Bitmap(ref mut bits1), StoreRef::Array(vec2)) => {
                 SubAssign::sub_assign(bits1, vec2);
             }
-            (&mut Bitmap(ref mut bits1), Bitmap(bits2)) => {
+            (&mut Bitmap(ref mut bits1), StoreRef::Bitmap(bits2)) => {
                 SubAssign::sub_assign(bits1, bits2);
             }
-            (&mut Array(ref mut vec1), Bitmap(bits2)) => {
+            (&mut Array(ref mut vec1), StoreRef::Bitmap(bits2)) => {
                 SubAssign::sub_assign(vec1, bits2);
             }
-            (Run(runs1), Run(runs2)) => {
+            (Run(runs1), StoreRef::Run(runs2)) => {
                 SubAssign::sub_assign(runs1, runs2);
             }
-            (Run(runs), Array(array)) => {
+            (Run(runs), StoreRef::Array(array)) => {
                 array.iter().for_each(|&f| {
                     runs.remove(f);
                 });
             }
-            (Array(array), Run(runs)) => {
+            (Array(array), StoreRef::Run(runs)) => {
                 runs.iter_intervals().for_each(|iv| {
                     array.remove_range(iv.start()..=iv.end());
                 });
             }
-            (this @ Run(..), Bitmap(bitmap)) => {
+            (this @ Run(..), StoreRef::Bitmap(bitmap)) => {
                 let Run(runs) = &this else { unreachable!() };
                 let mut new_bitmap = runs.to_bitmap();
                 SubAssign::sub_assign(&mut new_bitmap, bitmap);
                 *this = Bitmap(new_bitmap);
             }
-            (Bitmap(bitmap), Run(runs)) => {
+            (Bitmap(bitmap), StoreRef::Run(runs)) => {
                 let new_bitmap = runs.to_bitmap();
                 SubAssign::sub_assign(bitmap, &new_bitmap);
             }
@@ -712,16 +812,24 @@ impl BitXor<&Store> for &Store {
     type Output = Store;
 
     fn bitxor(self, rhs: &Store) -> Store {
+        self.bitxor(rhs.as_ref())
+    }
+}
+
+impl<'a> BitXor<StoreRef<'a>> for &Store {
+    type Output = Store;
+
+    fn bitxor(self, rhs: StoreRef<'a>) -> Store {
         match (self, rhs) {
-            (Array(vec1), Array(vec2)) => Array(BitXor::bitxor(vec1, vec2)),
-            (&Array(..), &Bitmap(..)) => {
-                let mut lhs = rhs.clone();
+            (Array(vec1), StoreRef::Array(vec2)) => Array(BitXor::bitxor(vec1.as_ref(), vec2)),
+            (Array(_), StoreRef::Bitmap(bitmap)) => {
+                let mut lhs: Store = Bitmap(bitmap.owned());
                 BitXorAssign::bitxor_assign(&mut lhs, self);
                 lhs
             }
             _ => {
                 let mut lhs = self.clone();
-                BitXorAssign::bitxor_assign(&mut lhs, rhs);
+                lhs.bitxor_assign(rhs);
                 lhs
             }
         }
@@ -731,8 +839,8 @@ impl BitXor<&Store> for &Store {
 impl BitXorAssign<Store> for Store {
     fn bitxor_assign(&mut self, mut rhs: Store) {
         match (self, &mut rhs) {
-            (&mut Array(ref mut vec1), &mut Array(ref vec2)) => {
-                *vec1 = BitXor::bitxor(&*vec1, vec2);
+            (Array(vec1), Array(vec2)) => {
+                *vec1 = BitXor::bitxor(vec1.as_ref(), vec2.as_ref());
             }
             (&mut Bitmap(ref mut bits1), &mut Array(ref vec2)) => {
                 BitXorAssign::bitxor_assign(bits1, vec2);
@@ -747,7 +855,7 @@ impl BitXorAssign<Store> for Store {
             (Run(runs1), Run(runs2)) => {
                 *runs1 = BitXor::bitxor(&*runs1, &*runs2);
             }
-            (Run(runs1), Array(array)) => BitXorAssign::bitxor_assign(runs1, array),
+            (Run(runs1), Array(array)) => BitXorAssign::bitxor_assign(runs1, array.as_ref()),
             (this @ Array(..), Run(runs1)) => {
                 let Array(array) = &this else { unreachable!() };
                 BitXorAssign::bitxor_assign(runs1, array);
@@ -767,36 +875,42 @@ impl BitXorAssign<Store> for Store {
 
 impl BitXorAssign<&Store> for Store {
     fn bitxor_assign(&mut self, rhs: &Store) {
+        self.bitxor_assign(rhs.as_ref());
+    }
+}
+
+impl<'a> BitXorAssign<StoreRef<'a>> for Store {
+    fn bitxor_assign(&mut self, rhs: StoreRef<'a>) {
         match (self, rhs) {
-            (&mut Array(ref mut vec1), Array(vec2)) => {
-                let this = mem::take(vec1);
-                *vec1 = BitXor::bitxor(&this, vec2);
+            (&mut Array(ref mut vec1), StoreRef::Array(vec2)) => {
+                *vec1 = BitXor::bitxor(vec1.as_ref(), vec2);
             }
-            (&mut Bitmap(ref mut bits1), Bitmap(bits2)) => {
+            (&mut Bitmap(ref mut bits1), StoreRef::Bitmap(bits2)) => {
                 BitXorAssign::bitxor_assign(bits1, bits2);
             }
-            (this @ &mut Array(..), Bitmap(bits2)) => {
-                let mut lhs: Store = Bitmap(bits2.clone());
+            (this @ &mut Array(..), StoreRef::Bitmap(bits2)) => {
+                let mut lhs: Store = Bitmap(bits2.owned());
                 BitXorAssign::bitxor_assign(&mut lhs, &*this);
                 *this = lhs;
             }
-            (&mut Bitmap(ref mut bits1), Array(vec2)) => {
+            (&mut Bitmap(ref mut bits1), StoreRef::Array(vec2)) => {
                 BitXorAssign::bitxor_assign(bits1, vec2);
             }
-            (Run(runs1), Run(runs2)) => {
-                *runs1 = BitXor::bitxor(&*runs1, runs2);
+            (Run(runs1), StoreRef::Run(runs2)) => {
+                let other = runs2.owned();
+                *runs1 = BitXor::bitxor(&*runs1, &other);
             }
-            (Run(runs1), Array(array)) => BitXorAssign::bitxor_assign(runs1, array),
-            (this @ Array(..), Run(runs1)) => {
+            (Run(runs1), StoreRef::Array(array)) => BitXorAssign::bitxor_assign(runs1, array),
+            (this @ Array(..), StoreRef::Run(runs1)) => {
                 let Array(array) = &this else { unreachable!() };
-                let mut runs1 = runs1.clone();
-                BitXorAssign::bitxor_assign(&mut runs1, array);
-                *this = Run(runs1);
+                let mut runs = runs1.owned();
+                BitXorAssign::bitxor_assign(&mut runs, array);
+                *this = Run(runs);
             }
-            (Bitmap(bitmap), Run(runs)) => {
+            (Bitmap(bitmap), StoreRef::Run(runs)) => {
                 BitXorAssign::bitxor_assign(bitmap, &runs.to_bitmap());
             }
-            (this @ Run(..), Bitmap(bitmap)) => {
+            (this @ Run(..), StoreRef::Bitmap(bitmap)) => {
                 let Run(runs) = &this else { unreachable!() };
                 let mut new_bitmap = runs.to_bitmap();
                 BitXorAssign::bitxor_assign(&mut new_bitmap, bitmap);

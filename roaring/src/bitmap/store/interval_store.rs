@@ -5,6 +5,7 @@ use core::ops::{
 use core::slice::Iter;
 use core::{cmp::Ordering, ops::ControlFlow};
 
+use super::array_store::ArrayStoreRef;
 use super::{ArrayStore, BitmapStore};
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -18,6 +19,15 @@ impl Default for IntervalStore {
         Self::new()
     }
 }
+
+impl<'a> From<&'a IntervalStore> for IntervalStoreRef<'a> {
+    fn from(value: &'a IntervalStore) -> Self {
+        IntervalStoreRef(&value.0)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IntervalStoreRef<'a>(&'a [Interval]);
 
 impl IntervalStore {
     pub fn new() -> Self {
@@ -294,20 +304,11 @@ impl IntervalStore {
     }
 
     pub fn contains(&self, index: u16) -> bool {
-        self.0.binary_search_by(|iv| cmp_index_interval(index, *iv).reverse()).is_ok()
+        self.as_ref().contains(index)
     }
 
     pub fn contains_range(&self, range: RangeInclusive<u16>) -> bool {
-        let interval = Interval::new_unchecked(*range.start(), *range.end());
-        let start = self.0.binary_search_by(|iv| cmp_index_interval(interval.start, *iv).reverse());
-        let end = self.0.binary_search_by(|iv| cmp_index_interval(interval.end, *iv).reverse());
-        match (start, end) {
-            // both start and end are inside an interval,
-            // check if this interval is that same interval.
-            // If this is not the case then this range is not contained in this store
-            (Ok(start_id), Ok(end_id)) => start_id == end_id,
-            _ => false,
-        }
+        self.as_ref().contains_range(range)
     }
 
     fn step_walk<
@@ -383,7 +384,7 @@ impl IntervalStore {
     }
 
     pub(crate) fn is_subset_array(&self, other: &ArrayStore) -> bool {
-        self.0.iter().all(|interval| other.contains_range(interval.start..=interval.end))
+        self.0.iter().all(|interval| other.as_ref().contains_range(interval.start..=interval.end))
     }
 
     pub(crate) fn is_subset_bitmap(&self, other: &BitmapStore) -> bool {
@@ -413,74 +414,31 @@ impl IntervalStore {
     }
 
     pub fn len(&self) -> u64 {
-        self.0.iter().map(|iv| iv.run_len()).sum()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn min(&self) -> Option<u16> {
-        self.0.first().map(|f| f.start)
+        self.as_ref().len()
     }
 
     pub fn max(&self) -> Option<u16> {
-        self.0.last().map(|f| f.end)
-    }
-
-    pub fn rank(&self, value: u16) -> u64 {
-        let mut rank = 0;
-        for iv in self.0.iter() {
-            if iv.end <= value {
-                rank += iv.run_len();
-            } else if iv.start <= value {
-                rank += Interval::new_unchecked(iv.start, value).run_len();
-            } else {
-                break;
-            }
-        }
-        rank
-    }
-
-    pub fn select(&self, mut n: u16) -> Option<u16> {
-        for iv in self.0.iter() {
-            let run_len = iv.run_len();
-            if run_len <= n.into() {
-                n -= iv.run_len() as u16; // this conversion never overflows since run_len is
-                                          // smaller then a u16
-            } else {
-                return Some(iv.start + n);
-            }
-        }
-        None
+        self.as_ref().max()
     }
 
     pub fn run_amount(&self) -> u64 {
-        self.0.len() as u64
+        self.as_ref().run_amount()
     }
 
     pub fn to_bitmap(&self) -> BitmapStore {
-        let mut bits = BitmapStore::new();
-        for iv in self.0.iter() {
-            bits.insert_range(iv.start..=iv.end);
-        }
-        bits
+        self.as_ref().to_bitmap()
     }
 
     pub fn to_array(&self) -> ArrayStore {
-        let mut array = ArrayStore::new();
-        for iv in self.0.iter() {
-            array.insert_range(iv.start..=iv.end);
-        }
-        array
+        self.as_ref().to_array()
     }
 
     pub(crate) fn iter(&'_ self) -> RunIterBorrowed<'_> {
-        self.into_iter()
+        self.as_ref().iter()
     }
 
     pub(crate) fn iter_intervals(&'_ self) -> core::slice::Iter<'_, Interval> {
-        self.0.iter()
+        self.as_ref().iter_intervals()
     }
 
     pub(crate) fn internal_validate(&self) -> Result<(), &'static str> {
@@ -503,6 +461,102 @@ impl IntervalStore {
         }
 
         Ok(())
+    }
+
+    pub fn as_ref(&self) -> IntervalStoreRef<'_> {
+        self.into()
+    }
+}
+
+impl<'a> IntervalStoreRef<'a> {
+    pub fn len(&self) -> u64 {
+        self.0.iter().map(|iv| iv.run_len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn min(&self) -> Option<u16> {
+        self.0.first().map(|iv| iv.start)
+    }
+
+    pub fn max(&self) -> Option<u16> {
+        self.0.last().map(|iv| iv.end)
+    }
+
+    pub fn run_amount(&self) -> u64 {
+        self.0.len() as u64
+    }
+
+    pub fn contains(&self, index: u16) -> bool {
+        self.0.binary_search_by(|iv| cmp_index_interval(index, *iv).reverse()).is_ok()
+    }
+
+    pub fn contains_range(&self, range: RangeInclusive<u16>) -> bool {
+        let interval = Interval::new_unchecked(*range.start(), *range.end());
+        let start = self.0.binary_search_by(|iv| cmp_index_interval(interval.start, *iv).reverse());
+        let end = self.0.binary_search_by(|iv| cmp_index_interval(interval.end, *iv).reverse());
+        match (start, end) {
+            (Ok(start_id), Ok(end_id)) => start_id == end_id,
+            _ => false,
+        }
+    }
+
+    pub fn rank(&self, value: u16) -> u64 {
+        let mut rank = 0;
+        for iv in self.0.iter() {
+            if iv.end <= value {
+                rank += iv.run_len();
+            } else if iv.start <= value {
+                rank += Interval::new_unchecked(iv.start, value).run_len();
+            } else {
+                break;
+            }
+        }
+        rank
+    }
+
+    pub fn select(&self, mut n: u16) -> Option<u16> {
+        for iv in self.0.iter() {
+            let run_len = iv.run_len();
+            if run_len <= n.into() {
+                n -= iv.run_len() as u16;
+            } else {
+                return Some(iv.start + n);
+            }
+        }
+        None
+    }
+
+    pub fn iter(&self) -> RunIterBorrowed<'a> {
+        RunIter::new(self.0.iter())
+    }
+
+    pub fn iter_intervals(&self) -> core::slice::Iter<'a, Interval> {
+        self.0.iter()
+    }
+
+    #[allow(clippy::wrong_self_convention)]
+    pub fn to_bitmap(&self) -> BitmapStore {
+        let mut bits = BitmapStore::new();
+        for iv in self.0.iter() {
+            bits.insert_range(iv.start..=iv.end);
+        }
+        bits
+    }
+
+    #[allow(clippy::wrong_self_convention)]
+    pub fn to_array(&self) -> ArrayStore {
+        let mut array = ArrayStore::new();
+        for iv in self.0.iter() {
+            array.insert_range(iv.start..=iv.end);
+        }
+        array
+    }
+
+    pub fn owned(&self) -> IntervalStore {
+        IntervalStore(self.0.to_vec())
     }
 }
 
@@ -539,10 +593,26 @@ impl BitOrAssign<&ArrayStore> for IntervalStore {
     }
 }
 
+impl BitOrAssign<ArrayStoreRef<'_>> for IntervalStore {
+    fn bitor_assign(&mut self, rhs: ArrayStoreRef<'_>) {
+        for &i in rhs.iter() {
+            self.insert(i);
+        }
+    }
+}
+
 impl BitOrAssign<&Self> for IntervalStore {
     fn bitor_assign(&mut self, rhs: &Self) {
         for iv in rhs.iter_intervals() {
             self.insert_range(iv.start..=iv.end);
+        }
+    }
+}
+
+impl BitOrAssign<IntervalStoreRef<'_>> for IntervalStore {
+    fn bitor_assign(&mut self, rhs: IntervalStoreRef<'_>) {
+        for iv in rhs.iter_intervals() {
+            self.insert_range(iv.start()..=iv.end());
         }
     }
 }
@@ -571,10 +641,24 @@ impl BitAndAssign<&IntervalStore> for ArrayStore {
     }
 }
 
+impl BitAndAssign<IntervalStoreRef<'_>> for ArrayStore {
+    fn bitand_assign(&mut self, rhs: IntervalStoreRef<'_>) {
+        self.retain(|f| rhs.contains(f));
+    }
+}
+
 impl SubAssign<&Self> for IntervalStore {
     fn sub_assign(&mut self, rhs: &Self) {
         for iv in rhs.iter_intervals() {
             self.remove_range(iv.start..=iv.end);
+        }
+    }
+}
+
+impl SubAssign<IntervalStoreRef<'_>> for IntervalStore {
+    fn sub_assign(&mut self, rhs: IntervalStoreRef<'_>) {
+        for iv in rhs.iter_intervals() {
+            self.remove_range(iv.start()..=iv.end());
         }
     }
 }
@@ -593,6 +677,18 @@ impl BitXor for &IntervalStore {
 
 impl BitXorAssign<&ArrayStore> for IntervalStore {
     fn bitxor_assign(&mut self, rhs: &ArrayStore) {
+        rhs.iter().for_each(|&f| {
+            if self.contains(f) {
+                self.remove(f);
+            } else {
+                self.insert(f);
+            }
+        })
+    }
+}
+
+impl BitXorAssign<ArrayStoreRef<'_>> for IntervalStore {
+    fn bitxor_assign(&mut self, rhs: ArrayStoreRef<'_>) {
         rhs.iter().for_each(|&f| {
             if self.contains(f) {
                 self.remove(f);

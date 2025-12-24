@@ -299,7 +299,7 @@ impl BitOr<&Container> for &Container {
     type Output = Container;
 
     fn bitor(self, rhs: &Container) -> Container {
-        let store = BitOr::bitor(&self.store, &rhs.store);
+        let store = BitOr::bitor(self.store.as_ref(), rhs.store.as_ref());
         let mut container = Container { key: self.key, store };
         container.ensure_correct_store();
         container
@@ -315,7 +315,7 @@ impl BitOrAssign<Container> for Container {
 
 impl BitOrAssign<&Container> for Container {
     fn bitor_assign(&mut self, rhs: &Container) {
-        BitOrAssign::bitor_assign(&mut self.store, &rhs.store);
+        BitOrAssign::bitor_assign(&mut self.store, rhs.store.as_ref());
         self.ensure_correct_store();
     }
 }
@@ -349,7 +349,7 @@ impl Sub<&Container> for &Container {
     type Output = Container;
 
     fn sub(self, rhs: &Container) -> Container {
-        let store = Sub::sub(&self.store, &rhs.store);
+        let store = Sub::sub(self.store.as_ref(), rhs.store.as_ref());
         let mut container = Container { key: self.key, store };
         container.ensure_correct_store();
         container

@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 
-use super::bitmap_store::{bit, key, BitmapStore, BITMAP_LENGTH};
+use super::bitmap_store::{bit, key, BitmapStore, BitmapStoreRef, BITMAP_LENGTH};
 use super::Interval;
 
 pub(crate) const ARRAY_ELEMENT_BYTES: usize = 2;
@@ -23,6 +23,17 @@ pub(crate) const ARRAY_ELEMENT_BYTES: usize = 2;
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct ArrayStore {
     vec: Vec<u16>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct ArrayStoreRef<'a> {
+    vec: &'a [u16],
+}
+
+impl<'a> From<&'a ArrayStore> for ArrayStoreRef<'a> {
+    fn from(val: &'a ArrayStore) -> Self {
+        ArrayStoreRef { vec: &val.vec }
+    }
 }
 
 /// Return the first contiguous range of elements in a sorted slice.
@@ -202,27 +213,6 @@ impl ArrayStore {
         self.vec.truncate(self.vec.len() - n as usize);
     }
 
-    pub fn contains(&self, index: u16) -> bool {
-        self.vec.binary_search(&index).is_ok()
-    }
-
-    pub fn contains_range(&self, range: RangeInclusive<u16>) -> bool {
-        let start = *range.start();
-        let end = *range.end();
-        let range_count = usize::from(end - start) + 1;
-        if self.vec.len() < range_count {
-            return false;
-        }
-        let start_i = match self.vec.binary_search(&start) {
-            Ok(i) => i,
-            Err(_) => return false,
-        };
-
-        // If there are `range_count` items, last item in the next range_count should be the
-        // expected end value, because this vec is sorted and has no duplicates
-        self.vec.get(start_i + range_count - 1) == Some(&end)
-    }
-
     pub fn is_disjoint(&self, other: &Self) -> bool {
         let (mut i1, mut i2) = (self.vec.iter(), other.vec.iter());
         let (mut value1, mut value2) = (i1.next(), i2.next());
@@ -284,31 +274,12 @@ impl ArrayStore {
     }
 
     pub fn len(&self) -> u64 {
-        self.vec.len() as u64
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.vec.is_empty()
-    }
-
-    pub fn min(&self) -> Option<u16> {
-        self.vec.first().copied()
+        self.as_ref().len()
     }
 
     #[inline]
     pub fn max(&self) -> Option<u16> {
-        self.vec.last().copied()
-    }
-
-    pub fn rank(&self, index: u16) -> u64 {
-        match self.vec.binary_search(&index) {
-            Ok(i) => i as u64 + 1,
-            Err(i) => i as u64,
-        }
-    }
-
-    pub fn select(&self, n: u16) -> Option<u16> {
-        self.vec.get(n as usize).cloned()
+        self.as_ref().max()
     }
 
     pub fn iter(&'_ self) -> core::slice::Iter<'_, u16> {
@@ -356,11 +327,80 @@ impl ArrayStore {
 
         Ok(())
     }
+
+    pub fn as_ref(&self) -> ArrayStoreRef<'_> {
+        self.into()
+    }
 }
 
-impl<'a> From<&'a ArrayStore> for ArrayStoreRef<'a> {
-    fn from(val: &'a ArrayStore) -> Self {
-        ArrayStoreRef { vec: &val.vec }
+impl<'a> ArrayStoreRef<'a> {
+    #[inline]
+    #[allow(dead_code)]
+    pub fn from_slice_unchecked(data: &[u16]) -> ArrayStoreRef<'_> {
+        if cfg!(debug_assertions) {
+            let _: ArrayStore = data.to_vec().try_into().unwrap();
+            ArrayStoreRef { vec: data }
+        } else {
+            ArrayStoreRef { vec: data }
+        }
+    }
+
+    pub fn len(&self) -> u64 {
+        self.vec.len() as u64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vec.is_empty()
+    }
+
+    pub fn min(&self) -> Option<u16> {
+        self.vec.first().copied()
+    }
+
+    #[inline]
+    pub fn max(&self) -> Option<u16> {
+        self.vec.last().copied()
+    }
+
+    pub fn contains(&self, index: u16) -> bool {
+        self.vec.binary_search(&index).is_ok()
+    }
+
+    pub fn contains_range(&self, range: RangeInclusive<u16>) -> bool {
+        let start = *range.start();
+        let end = *range.end();
+        let range_count = usize::from(end - start) + 1;
+        if self.vec.len() < range_count {
+            return false;
+        }
+        let start_i = match self.vec.binary_search(&start) {
+            Ok(i) => i,
+            Err(_) => return false,
+        };
+
+        // If there are `range_count` items, last item in the next range_count should be the
+        // expected end value, because this vec is sorted and has no duplicates
+        self.vec.get(start_i + range_count - 1) == Some(&end)
+    }
+
+    pub fn rank(&self, index: u16) -> u64 {
+        self.vec.partition_point(|&value| value <= index) as u64
+    }
+
+    pub fn select(&self, n: u16) -> Option<u16> {
+        self.vec.get(n as usize).copied()
+    }
+
+    pub fn iter(&self) -> core::slice::Iter<'a, u16> {
+        self.vec.iter()
+    }
+
+    pub fn as_slice(&self) -> &[u16] {
+        self.vec
+    }
+
+    pub fn owned(&self) -> ArrayStore {
+        ArrayStore::from_vec_unchecked(self.vec.to_vec())
     }
 }
 
@@ -418,70 +458,10 @@ impl TryFrom<Vec<u16>> for ArrayStore {
     }
 }
 
-pub(crate) struct ArrayStoreRef<'a> {
-    vec: &'a [u16],
-}
-
-impl<'a> ArrayStoreRef<'a> {
-    #[inline]
-    pub fn from_slice_unchecked(data: &[u16]) -> ArrayStoreRef<'_> {
-        if cfg!(debug_assertions) {
-            let _: ArrayStore = data.to_vec().try_into().unwrap();
-            ArrayStoreRef { vec: data }
-        } else {
-            ArrayStoreRef { vec: data }
-        }
-    }
-
-    pub fn byte_size(&self) -> usize {
-        ArrayStore::serialized_byte_size(self.len())
-    }
-
-    pub fn len(&self) -> u64 {
-        self.vec.len() as u64
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.vec.is_empty()
-    }
-
-    pub fn min(&self) -> Option<u16> {
-        self.vec.first().copied()
-    }
-
-    #[inline]
-    pub fn max(&self) -> Option<u16> {
-        self.vec.last().copied()
-    }
-
-    pub fn rank(&self, index: u16) -> u64 {
-        match self.vec.binary_search(&index) {
-            Ok(i) => i as u64 + 1,
-            Err(i) => i as u64,
-        }
-    }
-
-    pub fn select(&self, n: u16) -> Option<u16> {
-        self.vec.get(n as usize).cloned()
-    }
-
-    pub fn iter(&'_ self) -> core::slice::Iter<'_, u16> {
-        self.vec.iter()
-    }
-
-    pub fn as_slice(&self) -> &[u16] {
-        self.vec
-    }
-}
-
-impl<'a, T> BitOr<T> for &ArrayStore
-where
-    T: Into<ArrayStoreRef<'a>> + 'a,
-{
+impl<'a> BitOr<ArrayStoreRef<'a>> for ArrayStoreRef<'_> {
     type Output = ArrayStore;
 
-    fn bitor(self, rhs: T) -> Self::Output {
-        let rhs = rhs.into();
+    fn bitor(self, rhs: ArrayStoreRef<'a>) -> Self::Output {
         #[allow(clippy::suspicious_arithmetic_impl)]
         let capacity = self.vec.len() + rhs.vec.len();
         let mut visitor = VecWriter::new(capacity);
@@ -493,14 +473,10 @@ where
     }
 }
 
-impl<'a, T> BitAnd<T> for &ArrayStore
-where
-    T: Into<ArrayStoreRef<'a>> + 'a,
-{
+impl<'a> BitAnd<ArrayStoreRef<'a>> for ArrayStoreRef<'_> {
     type Output = ArrayStore;
 
-    fn bitand(self, rhs: T) -> Self::Output {
-        let rhs = rhs.into();
+    fn bitand(self, rhs: ArrayStoreRef<'a>) -> Self::Output {
         let mut visitor = VecWriter::new(self.vec.len().min(rhs.vec.len()));
         #[cfg(feature = "simd")]
         vector::and(self.as_slice(), rhs.as_slice(), &mut visitor);
@@ -510,13 +486,9 @@ where
     }
 }
 
-impl<'a, T> BitAndAssign<T> for ArrayStore
-where
-    T: Into<ArrayStoreRef<'a>> + 'a,
-{
+impl<'a> BitAndAssign<ArrayStoreRef<'a>> for ArrayStore {
     #[allow(clippy::suspicious_op_assign_impl)]
-    fn bitand_assign(&mut self, rhs: T) {
-        let rhs = rhs.into();
+    fn bitand_assign(&mut self, rhs: ArrayStoreRef<'a>) {
         #[cfg(feature = "simd")]
         {
             let mut visitor = VecWriter::new(self.vec.len().min(rhs.vec.len()));
@@ -540,14 +512,16 @@ impl BitAndAssign<&BitmapStore> for ArrayStore {
     }
 }
 
-impl<'a, T> Sub<T> for &ArrayStore
-where
-    T: Into<ArrayStoreRef<'a>> + 'a,
-{
+impl BitAndAssign<BitmapStoreRef<'_>> for ArrayStore {
+    fn bitand_assign(&mut self, rhs: BitmapStoreRef<'_>) {
+        self.retain(|x| rhs.contains(x));
+    }
+}
+
+impl<'a> Sub<ArrayStoreRef<'a>> for ArrayStoreRef<'_> {
     type Output = ArrayStore;
 
-    fn sub(self, rhs: T) -> Self::Output {
-        let rhs = rhs.into();
+    fn sub(self, rhs: ArrayStoreRef<'a>) -> Self::Output {
         let mut visitor = VecWriter::new(self.vec.len());
         #[cfg(feature = "simd")]
         vector::sub(self.as_slice(), rhs.as_slice(), &mut visitor);
@@ -587,14 +561,16 @@ impl SubAssign<&BitmapStore> for ArrayStore {
     }
 }
 
-impl<'a, T> BitXor<T> for &ArrayStore
-where
-    T: Into<ArrayStoreRef<'a>> + 'a,
-{
+impl SubAssign<BitmapStoreRef<'_>> for ArrayStore {
+    fn sub_assign(&mut self, rhs: BitmapStoreRef<'_>) {
+        self.retain(|x| !rhs.contains(x));
+    }
+}
+
+impl<'a> BitXor<ArrayStoreRef<'a>> for ArrayStoreRef<'_> {
     type Output = ArrayStore;
 
-    fn bitxor(self, rhs: T) -> Self::Output {
-        let rhs = rhs.into();
+    fn bitxor(self, rhs: ArrayStoreRef<'a>) -> Self::Output {
         #[allow(clippy::suspicious_arithmetic_impl)]
         let capacity = self.vec.len() + rhs.vec.len();
         let mut visitor = VecWriter::new(capacity);

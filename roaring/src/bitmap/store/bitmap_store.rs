@@ -4,6 +4,8 @@ use core::fmt::{Display, Formatter};
 use core::mem::size_of;
 use core::ops::{BitAndAssign, BitOrAssign, BitXorAssign, RangeInclusive, SubAssign};
 
+use crate::bitmap::store::array_store::ArrayStoreRef;
+
 use super::{ArrayStore, Interval};
 
 #[cfg(not(feature = "std"))]
@@ -19,6 +21,18 @@ pub const BITMAP_BYTES: usize = BITMAP_LENGTH * 8;
 pub struct BitmapStore {
     len: u64,
     bits: Box<[u64; BITMAP_LENGTH]>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct BitmapStoreRef<'a> {
+    len: u64,
+    bits: &'a [u64; BITMAP_LENGTH],
+}
+
+impl<'a> From<&'a BitmapStore> for BitmapStoreRef<'a> {
+    fn from(val: &'a BitmapStore) -> Self {
+        BitmapStoreRef { len: val.len, bits: &val.bits }
+    }
 }
 
 impl BitmapStore {
@@ -229,38 +243,11 @@ impl BitmapStore {
     }
 
     pub fn contains(&self, index: u16) -> bool {
-        self.bits[key(index)] & (1 << bit(index)) != 0
+        self.as_ref().contains(index)
     }
 
     pub fn contains_range(&self, range: RangeInclusive<u16>) -> bool {
-        let start = *range.start();
-        let end = *range.end();
-        if self.len() < u64::from(end - start) + 1 {
-            return false;
-        }
-
-        let (start_i, start_bit) = (key(start), bit(start));
-        let (end_i, end_bit) = (key(end), bit(end));
-
-        // Create a mask to exclude the first `start_bit` bits
-        // e.g. if we start at bit index 1, this will create a mask which includes all but the bit
-        // at index 0.
-        let start_mask = !((1 << start_bit) - 1);
-        // We want to create a mask which includes the end_bit, so we create a mask of
-        // `end_bit + 1` bits. `end_bit` will be between [0, 63], so we create a mask including
-        // between [1, 64] bits. For example, if the last bit is the 0th bit, we make a mask with
-        // only the 0th bit set (one bit).
-        let end_mask = (!0) >> (64 - (end_bit + 1));
-
-        match &self.bits[start_i..=end_i] {
-            [] => unreachable!(),
-            &[word] => word & (start_mask & end_mask) == (start_mask & end_mask),
-            &[first, ref rest @ .., last] => {
-                (first & start_mask) == start_mask
-                    && rest.iter().all(|&word| word == !0)
-                    && (last & end_mask) == end_mask
-            }
-        }
+        self.as_ref().contains_range(range)
     }
 
     pub fn is_disjoint(&self, other: &BitmapStore) -> bool {
@@ -283,51 +270,12 @@ impl BitmapStore {
     }
 
     pub fn len(&self) -> u64 {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    pub fn min(&self) -> Option<u16> {
-        self.bits
-            .iter()
-            .enumerate()
-            .find(|&(_, &bit)| bit != 0)
-            .map(|(index, bit)| (index * 64 + (bit.trailing_zeros() as usize)) as u16)
+        self.as_ref().len()
     }
 
     #[inline]
     pub fn max(&self) -> Option<u16> {
-        self.bits
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|&(_, &bit)| bit != 0)
-            .map(|(index, bit)| (index * 64 + (63 - bit.leading_zeros() as usize)) as u16)
-    }
-
-    pub fn rank(&self, index: u16) -> u64 {
-        let (key, bit) = (key(index), bit(index));
-
-        self.bits[..key].iter().map(|v| v.count_ones() as u64).sum::<u64>()
-            + (self.bits[key] << (63 - bit)).count_ones() as u64
-    }
-
-    pub fn select(&self, n: u16) -> Option<u16> {
-        let mut n = n as u64;
-
-        for (key, value) in self.bits.iter().cloned().enumerate() {
-            let len = value.count_ones() as u64;
-            if n < len {
-                let index = select(value, n);
-                return Some((64 * key as u64 + index) as u16);
-            }
-            n -= len;
-        }
-
-        None
+        self.as_ref().max()
     }
 
     pub fn intersection_len_bitmap(&self, other: &BitmapStore) -> u64 {
@@ -366,7 +314,7 @@ impl BitmapStore {
     }
 
     pub fn iter(&self) -> BitmapIter<&[u64; BITMAP_LENGTH]> {
-        BitmapIter::new(&self.bits)
+        self.as_ref().iter()
     }
 
     pub fn into_iter(self) -> BitmapIter<Box<[u64; BITMAP_LENGTH]>> {
@@ -374,7 +322,7 @@ impl BitmapStore {
     }
 
     pub fn as_array(&self) -> &[u64; BITMAP_LENGTH] {
-        &self.bits
+        self.as_ref().as_array()
     }
 
     pub fn clear(&mut self) {
@@ -438,6 +386,10 @@ impl BitmapStore {
         }
         Ok(())
     }
+
+    pub fn as_ref(&self) -> BitmapStoreRef<'_> {
+        self.into()
+    }
 }
 
 // this can be done in 3 instructions on x86-64 with bmi2 with: tzcnt(pdep(1 << rank, value))
@@ -448,6 +400,97 @@ fn select(mut value: u64, n: u64) -> u64 {
         value &= value - 1;
     }
     value.trailing_zeros() as u64
+}
+
+impl<'a> BitmapStoreRef<'a> {
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn min(&self) -> Option<u16> {
+        self.bits
+            .iter()
+            .enumerate()
+            .find(|&(_, &bit)| bit != 0)
+            .map(|(index, bit)| (index * 64 + (bit.trailing_zeros() as usize)) as u16)
+    }
+
+    #[inline]
+    pub fn max(&self) -> Option<u16> {
+        self.bits
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|&(_, &bit)| bit != 0)
+            .map(|(index, bit)| (index * 64 + (63 - bit.leading_zeros() as usize)) as u16)
+    }
+
+    pub fn contains(&self, index: u16) -> bool {
+        self.bits[key(index)] & (1 << bit(index)) != 0
+    }
+
+    pub fn contains_range(&self, range: RangeInclusive<u16>) -> bool {
+        let start = *range.start();
+        let end = *range.end();
+        if self.len() < u64::from(end - start) + 1 {
+            return false;
+        }
+
+        let (start_i, start_bit) = (key(start), bit(start));
+        let (end_i, end_bit) = (key(end), bit(end));
+
+        let start_mask = !((1 << start_bit) - 1);
+        let end_mask = (!0) >> (64 - (end_bit + 1));
+
+        match &self.bits[start_i..=end_i] {
+            [] => unreachable!(),
+            &[word] => word & (start_mask & end_mask) == (start_mask & end_mask),
+            &[first, ref rest @ .., last] => {
+                (first & start_mask) == start_mask
+                    && rest.iter().all(|&word| word == !0)
+                    && (last & end_mask) == end_mask
+            }
+        }
+    }
+
+    pub fn rank(&self, index: u16) -> u64 {
+        let (key, bit) = (key(index), bit(index));
+        self.bits[..key].iter().map(|v| v.count_ones() as u64).sum::<u64>()
+            + (self.bits[key] << (63 - bit)).count_ones() as u64
+    }
+
+    pub fn select(&self, n: u16) -> Option<u16> {
+        let mut n = n as u64;
+        for (key, value) in self.bits.iter().cloned().enumerate() {
+            let len = value.count_ones() as u64;
+            if n < len {
+                let index = select(value, n);
+                return Some((64 * key as u64 + index) as u16);
+            }
+            n -= len;
+        }
+        None
+    }
+
+    pub fn iter(&self) -> BitmapIter<&'a [u64; BITMAP_LENGTH]> {
+        BitmapIter::new(self.bits)
+    }
+
+    pub fn as_array(&self) -> &'a [u64; BITMAP_LENGTH] {
+        self.bits
+    }
+
+    pub fn owned(&self) -> BitmapStore {
+        let mut bits = Box::new([0; BITMAP_LENGTH]);
+        for (index1, &index2) in bits.iter_mut().zip(self.bits) {
+            *index1 = index2
+        }
+        BitmapStore { len: self.len, bits }
+    }
 }
 
 impl Default for BitmapStore {
@@ -823,7 +866,7 @@ pub fn bit(index: u16) -> usize {
 }
 
 #[inline]
-fn op_bitmaps(bits1: &mut BitmapStore, bits2: &BitmapStore, op: impl Fn(&mut u64, u64)) {
+fn op_bitmaps(bits1: &mut BitmapStore, bits2: BitmapStoreRef, op: impl Fn(&mut u64, u64)) {
     bits1.len = 0;
     for (index1, &index2) in bits1.bits.iter_mut().zip(bits2.bits.iter()) {
         op(index1, index2);
@@ -831,14 +874,23 @@ fn op_bitmaps(bits1: &mut BitmapStore, bits2: &BitmapStore, op: impl Fn(&mut u64
     }
 }
 
-impl BitOrAssign<&Self> for BitmapStore {
-    fn bitor_assign(&mut self, rhs: &Self) {
-        op_bitmaps(self, rhs, BitOrAssign::bitor_assign);
+impl<'a, T> BitOrAssign<T> for BitmapStore
+where
+    T: Into<BitmapStoreRef<'a>> + 'a,
+{
+    fn bitor_assign(&mut self, rhs: T) {
+        op_bitmaps(self, rhs.into(), BitOrAssign::bitor_assign);
     }
 }
 
 impl BitOrAssign<&ArrayStore> for BitmapStore {
     fn bitor_assign(&mut self, rhs: &ArrayStore) {
+        self.bitor_assign(rhs.as_ref());
+    }
+}
+
+impl BitOrAssign<ArrayStoreRef<'_>> for BitmapStore {
+    fn bitor_assign(&mut self, rhs: ArrayStoreRef) {
         for &index in rhs.iter() {
             let (key, bit) = (key(index), bit(index));
             let old_w = self.bits[key];
@@ -849,22 +901,31 @@ impl BitOrAssign<&ArrayStore> for BitmapStore {
     }
 }
 
-impl BitAndAssign<&Self> for BitmapStore {
-    fn bitand_assign(&mut self, rhs: &Self) {
+impl<'a> BitAndAssign<BitmapStoreRef<'a>> for BitmapStore {
+    fn bitand_assign(&mut self, rhs: BitmapStoreRef<'a>) {
         op_bitmaps(self, rhs, BitAndAssign::bitand_assign);
     }
 }
 
-impl SubAssign<&Self> for BitmapStore {
+impl<'a, T> SubAssign<T> for BitmapStore
+where
+    T: Into<BitmapStoreRef<'a>> + 'a,
+{
     #[allow(clippy::suspicious_op_assign_impl)]
-    fn sub_assign(&mut self, rhs: &Self) {
-        op_bitmaps(self, rhs, |l, r| *l &= !r);
+    fn sub_assign(&mut self, rhs: T) {
+        op_bitmaps(self, rhs.into(), |l, r| *l &= !r);
     }
 }
 
 impl SubAssign<&ArrayStore> for BitmapStore {
-    #[allow(clippy::suspicious_op_assign_impl)]
     fn sub_assign(&mut self, rhs: &ArrayStore) {
+        self.sub_assign(rhs.as_ref());
+    }
+}
+
+impl SubAssign<ArrayStoreRef<'_>> for BitmapStore {
+    #[allow(clippy::suspicious_op_assign_impl)]
+    fn sub_assign(&mut self, rhs: ArrayStoreRef<'_>) {
         for &index in rhs.iter() {
             let (key, bit) = (key(index), bit(index));
             let old_w = self.bits[key];
@@ -875,14 +936,23 @@ impl SubAssign<&ArrayStore> for BitmapStore {
     }
 }
 
-impl BitXorAssign<&Self> for BitmapStore {
-    fn bitxor_assign(&mut self, rhs: &Self) {
-        op_bitmaps(self, rhs, BitXorAssign::bitxor_assign);
+impl<'a, T> BitXorAssign<T> for BitmapStore
+where
+    T: Into<BitmapStoreRef<'a>> + 'a,
+{
+    fn bitxor_assign(&mut self, rhs: T) {
+        op_bitmaps(self, rhs.into(), BitXorAssign::bitxor_assign);
     }
 }
 
 impl BitXorAssign<&ArrayStore> for BitmapStore {
     fn bitxor_assign(&mut self, rhs: &ArrayStore) {
+        self.bitxor_assign(rhs.as_ref())
+    }
+}
+
+impl BitXorAssign<ArrayStoreRef<'_>> for BitmapStore {
+    fn bitxor_assign(&mut self, rhs: ArrayStoreRef<'_>) {
         let mut len = self.len as i64;
         for &index in rhs.iter() {
             let (key, bit) = (key(index), bit(index));
